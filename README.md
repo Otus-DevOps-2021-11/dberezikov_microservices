@@ -72,7 +72,7 @@ $ docker inspect <u_image_id>
 
 Отличие контерйнера от образа в виде собственного вывода записываем в файл ```docker-monolith/docker-1.log```
 
-*Docker machine*
+Docker machine
 
 1. Создадим в Yndex Cloud хост
 ```css
