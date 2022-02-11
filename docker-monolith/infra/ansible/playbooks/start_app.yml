@@ -1,0 +1,13 @@
+---
+- name: Start app in Docker
+  hosts: all 
+  become: true
+  tasks:
+    - name: Deploy app docker container
+      docker_container:
+        image: seeker00837149/otus-reddit:1.0
+        name: reddit
+        state: started
+        auto_remove: true
+        ports:
+          - "80:9292"
