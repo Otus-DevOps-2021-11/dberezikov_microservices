@@ -439,3 +439,239 @@ PLAY RECAP *********************************************************************
 
 5. Проверка работы приложения  
 Возьмем на выбор пару ip из списка и проверим через браузер работу приложения по порту 80
+
+# ДЗ №12 Docker-образы. Микросервисы
+
+1. Создаем новую ветку ```docker-3```
+```css
+$ git checkout -b docker-3
+```
+
+2. Устанавливаем linter
+```css
+$ sudo wget -O /bin/hadolint https://github.com/hadolint/hadolint/releases/download/v2.8.0/hadolint-Linux-x86_64
+$ sudo chmod +x /bin/hadolint
+```
+
+3. Создаем новый виртуальный хост и подключаемся к нему через docker-machine
+```css
+docker-machine create \
+--driver generic \
+--generic-ip-address=62.84.113.48 \
+--generic-ssh-user ubuntu \
+--generic-ssh-key ~/.ssh/appuser \
+docker-host
+```
+
+```css
+eval $(docker-machine env docker-host)
+```
+
+4. Скачиваем и распаковываем архив внутри репозитория
+```css
+$ wget https://github.com/express42/reddit/archive/microservices.zip
+$ unzip microservices.zip
+$ rm microservices.zip
+$ mv reddit-microservices src
+```
+
+5. Создаем файл ```./post-py/Dockerfile``` для сервиса post с следующим содержимым
+```css
+FROM python:3.6.0-alpine
+
+WORKDIR /app
+ADD . /app
+
+RUN apk --no-cache --update add build-base && \
+    pip install -r /app/requirements.txt && \
+    apk del build-base
+
+ENV POST_DATABASE_HOST post_db
+ENV POST_DATABASE posts
+
+ENTRYPOINT ["python3", "post_app.py"]
+```
+
+6. Создаем файл ```./comment/Dockerfile``` для сервиса comment с следующим содержимым
+```css
+FROM ruby:2.2
+RUN apt-get update -qq && apt-get install -y build-essential
+
+ENV APP_HOME /app
+RUN mkdir $APP_HOME
+WORKDIR $APP_HOME
+
+ADD Gemfile* $APP_HOME/
+RUN bundle install
+ADD . $APP_HOME
+
+ENV COMMENT_DATABASE_HOST comment_db
+ENV COMMENT_DATABASE comments
+
+CMD ["puma"]
+```
+
+7. Создаем файл ```./ui/Dockerfile``` для сервиса ui с следующим сорержимым
+```css
+FROM ruby:2.2
+RUN apt-get update -qq && apt-get install -y build-essential
+
+ENV APP_HOME /app
+RUN mkdir $APP_HOME
+
+WORKDIR $APP_HOME
+ADD Gemfile* $APP_HOME/
+RUN bundle install
+ADD . $APP_HOME
+
+ENV POST_SERVICE_HOST post
+ENV POST_SERVICE_PORT 5000
+ENV COMMENT_SERVICE_HOST comment
+ENV COMMENT_SERVICE_PORT 9292
+
+CMD ["puma"]
+```
+
+
+8. Собираем приложение
+```css
+$ docker pull mongo:latest
+$ docker build -t seeker00837149/post:1.0 src/post-py
+$ docker build -t seeker00837149/comment:1.0 src/comment
+$ docker build -t seeker00837149/ui:1.0 src/ui
+```
+
+> Сборка ```ui``` началась не с первого шага, т.к. образ ruby:2.2 и build-essential скачивались в предыдущем шаге и в момент сборки ```ui``` беруться из кеша
+
+9. Запуск приложения
+```css
+$ docker network create reddit
+$ docker run -d --network=reddit \
+ --network-alias=post_db --network-alias=comment_db mongo:latest
+$ docker run -d --network=reddit \
+ --network-alias=post seeker00837149/post:1.0
+$ docker run -d --network=reddit \
+ --network-alias=comment seeker00837149/comment:1.0
+$ docker run -d --network=reddit \
+ -p 80:9292 seeker00837149/ui:1.0
+```
+
+> Для удобства проверки работы приложения в браузере сделаем проброс внутреннего порта 9292 на внешний порт 80
+
+## Задания со ⭐
+
+10. Останавливаем контейнеры
+```css
+$ docker kill $(docker ps -q)
+```
+
+11. Запустим контейнеры с другими сетевыми алиасами и зададим пременные окружения не пересоздавая образ
+```css
+$ docker run -d --network=reddit \
+--network-alias=db_host --name mongo_db mongo:latest
+$ docker run -d --network=reddit --env POST_DATABASE_HOST='db_host' \
+--network-alias=post_host --name post seeker00837149/post:1.0
+$ docker run -d --network=reddit \
+--env COMMENT_DATABASE_HOST='db_host' --network-alias=comment_host --name comment seeker00837149/comment:1.0
+$ docker run -d --network=reddit --env POST_SERVICE_HOST='post_host' --env COMMENT_SERVICE_HOST='comment_host' \
+-p 80:9292 --name ui seeker00837149/ui:1.0
+```
+
+12. Проверим работу приложения из браузера
+
+13. Улучшаем образ для ```ui``` сервиса  
+Зименяем содержимое ./ui/Dockerfile на следующии
+```css
+FROM ubuntu:16.04
+RUN apt-get update \
+    && apt-get install -y ruby-full ruby-dev build-essential \
+    && gem install bundler --no-ri --no-rdoc
+
+ENV APP_HOME /app
+RUN mkdir $APP_HOME
+
+WORKDIR $APP_HOME
+ADD Gemfile* $APP_HOME/
+RUN bundle install
+ADD . $APP_HOME
+
+ENV POST_SERVICE_HOST post
+ENV POST_SERVICE_PORT 5000
+ENV COMMENT_SERVICE_HOST comment
+ENV COMMENT_SERVICE_PORT 9292
+
+CMD ["puma"]
+```
+
+14. После пересборки образа видим, что образ на основе ubuntu:16.04 имеет значительно меньший размер по сравнению с образом ruby:2.2
+
+## Задания со ⭐
+
+14. Собираем образ на основе Alpine Linux и производим прочие улучшения
+
+14.1 Для проверки кода Dockerfile воспользуемся установленным ранее линтером  
+Пример проверки файла и результат проверки
+```css
+$ hadolint ./ui/Dockerfile
+```
+
+Пример вывода результата проверки
+```
+./ui/Dockerfile:2 DL3008 warning: Pin versions in apt get install. Instead of `apt-get install <package>` use `apt-get install <package>=<version>`
+./ui/Dockerfile:2 DL3009 info: Delete the apt-get lists after installing something
+./ui/Dockerfile:2 DL3015 info: Avoid additional packages by specifying `--no-install-recommends`
+./ui/Dockerfile:8 DL3020 error: Use COPY instead of ADD for files and folders
+./ui/Dockerfile:10 DL3020 error: Use COPY instead of ADD for files and folders
+```
+
+На основе выводов линтера производим улучшения Dockerfile для сервисов
+
+14.2 Пример ```Dockerfile``` сервиса ```ui``` с образа Alpine
+```css
+FROM alpine:3.14
+
+WORKDIR /app
+ADD . /app
+
+RUN apk update \
+    && apk add ruby ruby-dev ruby-full g++ make \
+    && gem install bundler:1.17.2 \
+    && bundle install \
+    && apk del ruby-dev g++ make
+
+ENV POST_SERVICE_HOST=post \
+    POST_SERVICE_PORT=5000 \
+    COMMENT_SERVICE_HOST=comment \
+    COMMENT_SERVICE_PORT=9292
+
+CMD ["puma"]
+```
+
+Все команды по обновлению и установке приложений собраны в один слой  
+Все переменные собраны в один слой
+
+> Версии ```Dockerfile``` с улучшениями находятся в директориях с сервисами и обозначены ```Dockerfile.<цифра>```
+
+15. Для возможности сохранения информации после выключения контейнеров создадим Docker volume и подключим его к контейнеру с MongoDB
+```css
+$ docker volume create reddit_db
+```
+
+Выключаем старые контейнеры
+```css
+$ docker kill $(docker ps -q)
+```
+
+Запускаем новые контейнеры с примапливанием Docker volume
+```css
+$ docker run -d --network=reddit --network-alias=post_db \
+ --network-alias=comment_db -v reddit_db:/data/db mongo:latest
+$ docker run -d --network=reddit \
+ --network-alias=post seeker00837149/post:3.0
+$ docker run -d --network=reddit \
+ --network-alias=comment seeker00837149/comment:3.0
+$ docker run -d --network=reddit \
+ -p 80:9292 seeker00837149/ui:3.0
+```
+
+После проверки приложения и написание тестового поста, для проверки сохранности поста, снова останавливаем контейнеры и запускаем новые.
