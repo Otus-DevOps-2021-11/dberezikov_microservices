@@ -675,3 +675,204 @@ $ docker run -d --network=reddit \
 ```
 
 После проверки приложения и написание тестового поста, для проверки сохранности поста, снова останавливаем контейнеры и запускаем новые.
+
+# ДЗ №13 Docker: сети, docker-compose
+
+1. Создаем новую ветку 
+```css
+$ git checkout -b docker-4
+```
+
+2. Подключаемся к ранее созданному хосту
+```css
+$ eval $(docker-machine env docker-host)
+```
+
+3. Запустим контейнер и передадим внутрь него команду ```ipconfig```
+```css
+$ docker run -ti --rm --network host joffotron/docker-net-tools -c ifconfig
+```
+В выводе информация по трем сетевым интерйейсам docker0, eth0 и lo
+
+4. Запустим команду ```iconfig``` и передадим ее на сам хост (не в контейнер)
+```css
+$ docker-machine ssh docker-host ifconfig
+```
+В выводе информация о том, что команда не найдена. Команда из пункта №3 запускала контейнер с его последующим уничтожением после отработки команды ```ifconfig```, на самом сервере утилиты net-tools не установлены, поэтому и команды ```ifconfig``` была не найдена после выполнения команды из пункта №4
+
+5. Запустим команду ```docker run --network host -d nginx``` 4 раза  
+В выводе ```docker ps``` через несколько секунд останется только вызыванный первым контейнер. Так происходит по причине того, что сеть при запуске контейнеров мы указываем ```host```, т.е. сетевой стек не изолирован от хоста и в момент поднятия второго контейнера система видит, что порт 80 уже занят и контейнер останавливается.
+
+6. Повторно запускаем ```docker run -ti --rm --network host joffotron/docker-net-tools -c ifconfig``` указывая сетовой драйвер ```none```  
+В выводе видим только интерфейс lo, т.к. сетевой драйвер ```none``` отключает всю сеть для контейнера
+
+7. Повторно щапускаем ```docker run --network none -d nginx``` указывая сетевой драйвер ```none```  
+В выводе ```docker ps``` видим столько контейнеров, сколько раз запустили команду, теперь контейнеры не останавливаются, т.к. сеть для них отключена и порт 80 самого хоста никто из них не занимает
+
+8. Bridge network driver  
+Выполнены все команды из методической литературы. Контейнеры распределены по двум сетям. Итоговый результат, приложение работает.
+
+9. Docker-compose  
+Создадим файл ```docker-compose.yml``` в директории ```src``` с следующим содержимым
+```css
+version: '3.3'
+services:
+  post_db:
+    image: mongo:3.2
+    volumes:
+      - post_db:/data/db
+    networks:
+      - reddit
+  ui:
+    build: ./ui
+    image: ${USERNAME_HUB}/ui:1.0
+    ports:
+      - 9292:9292/tcp
+    networks:
+      - reddit
+  post:
+    build: ./post-py
+    image: ${USERNAME_HUB}/post:1.0
+    networks:
+      - reddit
+  comment:
+    build: ./comment
+    image: ${USERNAME_HUB}/comment:1.0
+    networks:
+      - reddit
+
+volumes:
+  post_db:
+
+networks:
+  reddit:
+```
+
+Сделаем экспорт переменной ```USERNAME_HUB```
+```css
+$ export USERNAME_HUB=seeker00837149
+```
+
+Теперь можно запустить docker-compose
+```css
+$ docker-compose up -d
+```
+
+10. Задание  
+
+Изменим docker-compose под кейс с множеством сетей; параметризируем с помощью переменных окружения внешний порт, версию сервисов, tag для mongo образа, подсети для сетей front_net и back_net, все переменные разместим в файле ```.env```
+
+Содержимое скорректированного файла ```docker-compose.yml```
+```css
+version: '3.3'
+services:
+  post_db:
+    image: mongo:${MONGO_TAG}
+    container_name: db
+    volumes:
+      - post_db:/data/db
+    networks:
+      - back_net
+  ui:
+    build: ./ui
+    image: ${USERNAME_HUB}/ui:${SERVICE_VER}
+    container_name: ui
+    ports:
+      - 80:9292/tcp
+    networks:
+      - front_net
+  post:
+    build: ./post-py
+    image: ${USERNAME_HUB}/post:${SERVICE_VER}
+    container_name: post
+    networks:
+      - front_net
+      - back_net
+  comment:
+    build: ./comment
+    image: ${USERNAME_HUB}/comment:${SERVICE_VER}
+    container_name: comment
+    networks:
+      - front_net
+      - back_net
+
+volumes:
+  post_db:
+
+networks:
+    front_net:
+        name: front_net
+        driver: bridge
+        ipam:
+            config:
+                - subnet: ${FRONT_NET_SUBNET}
+    back_net:
+        name: back_net
+        driver: bridge
+        ipam:
+            config:
+                - subnet: ${BACK_NET_SUBNET}
+``
+
+Содержимое файла ```.env```
+```css
+USERNAME_HUB=seeker00837149
+EXT_PORT=80
+SERVICE_VER=1.0
+MONGO_TAG=3.2
+FRONT_NET_SUBNET=10.0.1.0/24
+BACK_NET_SUBNET=10.0.2.0/24
+```
+
+При запуске проекта все сущности получают префикс от имени каталога, в котором запускается docker-compose.  
+Изменить имена сущностей можно несколькими способами:
+1) Указав в файле ```docker-compose.yml``` префиксы для контейнеров через ```container_name```, для сетей через ```name```
+
+2) Задать имя проекта можно при запуске docker-compose через ключ -p, пример
+```css
+$ docker-compose -p reddit up -d
+```
+
+3) С помощью переменной окружения ```COMPOSE_PROJECT_NAME```
+
+## Задания со ⭐  
+
+Создаем файл ```docker-compose.override.yml```, который будет переопределять действующие контейнеры  
+Создадим volumes для монтирования каталогов с приложением на хост машину в каталог по умолчанию
+В сервисы ```ui``` и ```comment``` допишем запуск приложения ```puma``` с флагами ```--debug``` и ```-w 2```
+
+Содержимое файла
+```css
+version: '3.3'
+services:
+  ui:
+    volumes:
+      - ui_vol:/app
+    command: puma --debug -w 2
+
+  post:
+    volumes:
+      - post_vol:/app
+
+  comment:
+    volumes:
+      - comment_vol:/app
+    command: puma --debug -w 2
+
+volumes:
+  ui_vol:
+  post_vol:
+  comment_vol:
+```
+
+Проверяем, что переопределение для контейнеров подхватится системой
+```css
+$ docker-compose config
+```
+
+Запускаем ```docker-compose```
+```css
+$ docker-compose up -d
+```
+
+Проверяем работу приложения из браузера
