@@ -1,0 +1,30 @@
+---
+- name: Docker runner register
+  hosts: all
+  become: true
+  vars:
+    - runner_name: "{{ my_runner_name }}"
+    - runner_token: "{{ my_runner_token }}"
+  tasks:
+    - name: Pull GitLab runner image
+      docker_image:
+        name: gitlab/gitlab-runner:latest
+        source: pull 
+      
+    - name: Create a GitLab runner
+      community.docker.docker_container:
+        name: "{{ runner_name }}"
+        image: gitlab/gitlab-runner:latest
+        volumes:
+          - /srv/gitlabrunner/config:/etc/gitlab-runner
+          - /var/run/docker.sock:/var/run/docker.sock gitlab/
+
+    - name: Run a simple command (command)
+      community.docker.docker_container_exec:
+        container: "{{ runner_name }}"
+        command: gitlab-runner register --url http://51.250.11.11/ --non-interactive --locked=false --name DockerRunner --executor docker --docker-image alpine:latest --registration-token "{{ runner_token }}" --tag-list "linux,bionic,ubuntu,docker" --run-untagged 
+      register: result
+
+    - name: Print stderr lines
+      debug:
+        var: result.stderr_lines       

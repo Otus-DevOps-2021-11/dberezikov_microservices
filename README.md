@@ -1289,5 +1289,8 @@ deploy_app:
 $ ansible-playbook playbooks/runner_register.yml --extra-vars "my_runner_name=Runner2 my_runner_token=psc9a2j_bwbWgoenxy8b"
 ```
 
+## Задания со ⭐    
+Настройка оповещений в Slack  
 
-
+Настройка производилась по инструкции https://docs.gitlab.com/ee/user/project/integrations/slack.html
+Ссылка на канал, где можно посмотреть результат настроенной интеграции https://devops-team-otus.slack.com/archives/C02QYLV14KE
