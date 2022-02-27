@@ -1,0 +1,25 @@
+---
+- name: Gitlab install
+  hosts: all
+  become: true
+  tasks:
+    - name: Pull GitLab image
+      docker_image:
+        name: gitlab/gitlab-ce:latest
+        source: pull
+
+    - name: Create a GitLab container
+      community.docker.docker_container:
+        name: Gitlab
+        image: gitlab/gitlab-ce:latest
+        volumes:
+          - /srv/gitlab/config:/etc/gitlab
+          - /srv/gitlab/logs:/var/log/gitlab
+          - /srv/gitlab/data:/var/opt/gitlab
+        ports:
+          - "80:80"
+          - "443:443"
+          - "2222:22"
+          - "9292:9292"  
+        env:
+          GITLAB_OMNIBUS_CONFIG: "external_url 'http://51.250.11.11'"

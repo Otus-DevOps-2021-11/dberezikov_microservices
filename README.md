@@ -876,3 +876,421 @@ $ docker-compose up -d
 ```
 
 Проверяем работу приложения из браузера
+
+# ДЗ №14 Устройство Gitlab CI. Построение процесса непрерывной поставки
+
+1. Создаем новую ветку
+```css
+$ git checkout -b gitlab-ci-1
+```
+
+2. Создаем новую vm при помощи Yandex.Cloud CLI
+```css
+$ yc compute instance create \
+--name gitlab-host \
+--hostname gitlab-host \
+--platform standard-v2 \
+--cores 2 \
+--core-fraction 50 \
+--memory=8 \
+--create-disk size=50 \
+--zone ru-central1-a \
+--network-interface subnet-name=otus-infra-net-ru-central1-a,nat-ip-version=ipv4 \
+--create-boot-disk image-folder-id=standard-images,image-family=ubuntu-1804-lts,size=15 \
+--ssh-key ~/.ssh/appuser.pub
+``
+
+3. Установка Docker на новый хост  
+
+3.1 Подготовим необходимые каталоги
+```css
+$ mkdir -p /srv/gitlab/config /srv/gitlab/data /srv/gitlab/logs
+```
+
+3.2 Подготовим конфигурацию для Ansible
+Содержимое ```ansible.cfg```
+```css
+[defaults]
+inventory = ./dynamic-inventory.sh
+remote_user = yc-user
+private_key_file = ~/.ssh/appuser
+host_key_checking = False
+retry_files_enabled = False
+``` 
+Используем скрипт динамического инвентори из прошлых ДЗ
+
+3.3 Подготовим скрипт по установке Docker  
+Содержимое ```playbooks/docker_install.yml```
+```css
+---
+- name: Docker Install
+  hosts: all
+  become: true
+  tasks:
+    - name: Install dependencies
+      apt:
+        update_cache: yes
+        name:
+        - apt-transport-https
+        - ca-certificates
+        - curl
+        - software-properties-common
+        - python3-pip
+        - gnupg
+        state: present
+
+    - name: Add Docker apt key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker repo
+      apt_repository:
+        repo: deb https://download.docker.com/linux/ubuntu bionic stable
+        state: present
+
+    - name: Install Docker Engine
+      apt:
+        update_cache: yes
+        name:
+        - docker-ce
+        - docker-ce-cli
+        - containerd.io
+        state: latest
+
+    - name: Install Docker module for Python
+      pip:
+        name: docker
+```
+
+3.4 Задания со ⭐  
+Подготовим Ansible скрипт для развертывания GitLab контейнера  
+Содержимое ```playbooks/gitlab_install.yml```
+```css
+---
+- name: Gitlab install
+  hosts: all
+  become: true
+  tasks:
+    - name: Pull GitLab image
+      docker_image:
+        name: gitlab/gitlab-ce:latest
+        source: pull
+
+    - name: Create a GitLab container
+      community.docker.docker_container:
+        name: Gitlab
+        image: gitlab/gitlab-ce:latest
+        volumes:
+          - /srv/gitlab/config:/etc/gitlab
+          - /srv/gitlab/logs:/var/log/gitlab
+          - /srv/gitlab/data:/var/opt/gitlab
+        ports:
+          - "80:80"
+          - "443:443"
+          - "2222:22"
+          - "9292:9292"
+        env:
+          GITLAB_OMNIBUS_CONFIG: "external_url 'http://51.250.11.11'"
+```
+
+3.5 Получение пароля root для авторизации в GitLab  
+```css
+$ ansible all -m shell -a 'sudo docker exec -it <id gitlab контейнера> grep 'Password:' /etc/gitlab/initial_root_password'
+```
+
+4. Создаем проект в GitLab по заданию
+
+4.1 Подключаем remote к локальному репозиторию  
+
+Зададим локальные настройки для подкелючения к gitlab хоступ  
+Содержимое ```~/.ssh/config```
+```css
+# GitLab
+Host gitlab
+  HostName 51.250.11.11
+  Port 2222
+  PreferredAuthentications publickey
+  IdentityFile ~/.ssh/appuser
+```
+
+4.2 Подключение remote
+```css
+$ git remote add gitlab git@gitlab/homework/example.git
+```
+
+4.3 Выполняем push в remote
+```css
+$ git push gitlab gitlab-ci-1
+```
+
+5. Определение CI/CD Pipeline  
+
+5.1 В корне репозитория создает файл ```.gitlab-ci.yml```
+```css
+stages:
+  - build
+  - test
+  - deploy
+
+build_job:
+  stage: build
+  script:
+    - echo 'Building'
+
+test_unit_job:
+  stage: test
+  script:
+    - echo 'Testing 1'
+
+test_integration_job:
+  stage: test
+  script:
+    - echo 'Testing 2'
+
+deploy_job:
+  stage: deploy
+  script:
+    - echo 'Deploy'
+```  
+
+5.2 Отправка изменений в remote
+```css
+$ git add .gitlab-ci.yml
+$ git commit -m 'add pipeline definition'
+$ git push gitlab gitlab-ci-1
+```
+
+5.3 Добавляем gitlab runner
+```css
+docker run -d --name gitlab-runner --restart always -v /srv/gitlabrunner/config:/etc/gitlab-runner -v /var/run/docker.sock:/var/run/docker.sock gitlab/gitlab-runner:latest
+```
+
+5.4 Регистрация gitlab runner
+```css
+$ sudo docker exec -it gitlab-runner gitlab-runner register \
+--url http://51.250.11.11/ \
+--non-interactive \
+--locked=false \
+--name DockerRunner \
+--executor docker \
+--docker-image alpine:latest \
+--registration-token psc9a2j_bwbWgoenxy8b \
+--tag-list "linux,bionic,ubuntu,docker" \
+--run-untagged
+```
+
+6. Добавим reddit в проект
+```css
+$ git clone https://github.com/express42/reddit.git && rm -rf ./reddit/.git
+$ git add reddit/
+$ git commit -m "Add reddit app"
+$ git push gitlab gitlab-ci-1
+```
+
+7. Изменим описание ```.gitlab-ci.yml```, добавим тесты, dev, stage, prod и динамические окружения
+```css
+image: ruby:2.4.2
+
+stages:
+  - build
+  - test
+  - review
+  - stage
+  - production
+
+variables:
+  DATABASE_URL: 'mongodb://mongo/user_posts'
+
+before_script:
+  - cd reddit
+  - bundle install
+
+build_job:
+  stage: build
+  script:
+    - echo 'Building'
+
+test_unit_job:
+  stage: test
+  services:
+    - mongo:latest
+  script:
+    - ruby simpletest.rb
+
+test_integration_job:
+  stage: test
+  script:
+    - echo 'Testing 2'
+
+deploy_dev_job:
+  stage: review
+  script:
+    - echo 'Deploy'
+  environment:
+    name: dev
+    url: http://dev.example.com
+
+branch review:
+  stage: review
+  script: echo "Deploy to $CI_ENVIRONMENT_SLUG"
+  environment:
+    name: branch/$CI_COMMIT_REF_NAME
+    url: http://$CI_ENVIRONMENT_SLUG.example.com
+  only:
+    - branches
+  except:
+    - master
+
+staging:
+  stage: stage
+  when: manual
+  only:
+    - /^\d+\.\d+\.\d+/
+  script:
+    - echo 'Deploy'
+  environment:
+    name: beta
+    url: http://beta.example.com
+
+production:
+  stage: production
+  when: manual
+  only:
+    - /^\d+\.\d+\.\d+/
+  script:
+    - echo 'Deploy'
+  environment:
+    name: production
+    url: http://example.com
+```
+
+Отправка изменений в remote
+```css
+$ git add .gitlab-ci.yml
+$ git commit -m 'add tests'
+$ git push gitlab gitlab-ci-1
+```
+
+> Так же в pipeline были добавлены условия для задач и проведен push с тегами
+
+## Задания со ⭐  
+Запуск reddit в контейнере
+
+> Для выполнения этого задания пришлось перерегистрировать gitlab-runner с другими параметрами, иначе в pipeline выдавалась ошибка:  
+> ```ERROR: error during connect: Get http://docker:2375/v1.40/info: dial tcp: lookup docker on 10.128.0.2:53: no such host```
+
+1. Перерегистрация pipeline
+```css
+$ docker exec -it gitlab-runner gitlab-runner register \
+ --url http://51.250.11.11/ \
+ --registration-token psc9a2j_bwbWgoenxy8b \
+  --executor docker \
+  --description "My Docker Runner" \
+  --docker-image "docker:19.03.12" \
+  --docker-volumes /var/run/docker.sock:/var/run/docker.sock
+```
+
+2. Создаем Dockerfile в корне репозитория
+```css
+FROM ubuntu:18.04
+
+RUN apt-get update
+RUN apt-get install -y mongodb-server ruby-full ruby-dev build-essential git
+RUN gem install bundler
+RUN git clone -b monolith https://github.com/express42/reddit.git
+RUN sed -i "s/'mongo'$/'mongo', '~> 2.0.0'/" reddit/Gemfile
+
+COPY files/mongod.conf /etc/mongod.conf
+COPY files/db_config /reddit/db_config
+COPY files/start.sh /start.sh
+
+RUN cd /reddit && rm Gemfile.lock && bundle install
+RUN chmod 0777 /start.sh
+
+CMD ["/start.sh"]
+```
+
+3. Создаем файловую структуру для сборки Dockerfile
+```css
+files
+├── db_config
+├── mongod.conf
+└── start.sh
+```
+
+4. Что бы контейнер деплоился на динамическое окружение, создаваемое для каждой ветки, необходимо добавить следующий код
+```css
+stages:
+  - build
+
+services:
+  - docker:19.03.12-dind
+
+deploy_app:
+  image: docker:19.03.12
+  stage: build
+  before_script:
+    - docker info
+  script:
+    - docker build -t reddit:latest .
+    - docker run --name reddit reddit:latest
+  environment:
+    name: branch/$CI_COMMIT_REF_NAME
+    url: http://$CI_ENVIRONMENT_SLUG.example.com
+  only:
+    - branches
+  except:
+    - master
+```
+
+## Задания со ⭐  
+Автоматизация развёртывания GitLab Runner через Ansible playbook
+
+Создаем playbook с именем ```runner_register.yml```
+Сожержимое playbook
+```css
+---
+- name: Docker runner register
+  hosts: all
+  become: true
+  vars:
+    - runner_name: "{{ my_runner_name }}"
+    - runner_token: "{{ my_runner_token }}"
+  tasks:
+    - name: Pull GitLab runner image
+      docker_image:
+        name: gitlab/gitlab-runner:latest
+        source: pull
+
+    - name: Create a GitLab runner
+      community.docker.docker_container:
+        name: "{{ runner_name }}"
+        image: gitlab/gitlab-runner:latest
+        volumes:
+          - /srv/gitlabrunner/config:/etc/gitlab-runner
+          - /var/run/docker.sock:/var/run/docker.sock gitlab/
+
+    - name: Run a simple command (command)
+      community.docker.docker_container_exec:
+        container: "{{ runner_name }}"
+        command: gitlab-runner register --url http://51.250.11.11/ --non-interactive --locked=false --name DockerRunner --executor docker --docker-image alpine:latest --registration-token "{{ runner_token }}" --tag-list "linux,bionic,ubuntu,docker" --run-untagged
+      register: result
+
+    - name: Print stderr lines
+      debug:
+        var: result.stderr_lines
+```
+
+> Для playbook используем входящие переменные имени раннера и токена
+
+Пример запуска playbook с указанием входящих переменных
+```css
+$ ansible-playbook playbooks/runner_register.yml --extra-vars "my_runner_name=Runner2 my_runner_token=psc9a2j_bwbWgoenxy8b"
+```
+
+## Задания со ⭐    
+Настройка оповещений в Slack  
+
+Настройка производилась по инструкции https://docs.gitlab.com/ee/user/project/integrations/slack.html  
+Ссылка на канал, где можно посмотреть результат настроенной интеграции https://devops-team-otus.slack.com/archives/C02QYLV14KE
