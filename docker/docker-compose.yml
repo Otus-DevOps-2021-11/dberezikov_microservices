@@ -17,7 +17,7 @@ services:
         aliases:
           - comment_db
   ui:
-    build: ./ui
+#    build: ./ui
     image: ${USERNAME_HUB}/ui:${SERVICE_VER}
     ports:
       - 80:9292/tcp
@@ -26,7 +26,7 @@ services:
         aliases:
           - ui
   post:
-    build: ./post-py
+#    build: ./post-py
     image: ${USERNAME_HUB}/post:${SERVICE_VER}
     container_name: post 
     networks:
@@ -37,7 +37,7 @@ services:
         aliases:
           - post
   comment:
-    build: ./comment
+#    build: ./comment
     image: ${USERNAME_HUB}/comment:${SERVICE_VER}
     networks:
       front_net:
