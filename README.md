@@ -1294,3 +1294,414 @@ $ ansible-playbook playbooks/runner_register.yml --extra-vars "my_runner_name=Ru
 
 Настройка производилась по инструкции https://docs.gitlab.com/ee/user/project/integrations/slack.html  
 Ссылка на канал, где можно посмотреть результат настроенной интеграции https://devops-team-otus.slack.com/archives/C02QYLV14KE
+
+# ДЗ №15 Введение в мониторинг. Системы мониторинга.
+
+1. Создаем новую ветку ```monitoring-1```
+```css
+$ git checkout -b monitoring-1
+```
+
+2. Создаем новый хост через yc
+```css
+yc compute instance create \
+--name docker-host \
+--hostname docker-host \
+--platform standard-v2 \
+--cores 2 \
+--core-fraction 50 \
+--memory=4 \
+--create-disk size=50 \
+--zone ru-central1-a \
+--network-interface subnet-name=otus-infra-net-ru-central1-a,nat-ip-version=ipv4 \
+--create-boot-disk image-folder-id=standard-images,image-family=ubuntu-1804-lts,size=15 \
+--ssh-key ~/.ssh/appuser.pub
+```
+
+Устанавливаем на нем docker через docker machine
+```css
+docker-machine create \
+--driver generic \
+--generic-ip-address=178.154.240.54 \
+--generic-ssh-user yc-user \
+--generic-ssh-key ~/.ssh/appuser \
+docker-host
+```
+
+Делаем хост активным для docker-machine
+```css
+$ eval $(docker-machine env docker-host)
+```
+
+3. Запускаем Prometheus внутри docker контейнера
+```css
+$ docker run --rm -p 9090:9090 -d --name prometheus prom/prometheus
+```
+
+4. Ознакамливаемся и интерфейсом Prometheus и метриками которые уже собираются с самого Prometheus
+
+5. Подготавливаем свой docker образ Prometheus  
+Создаем файл ```monitoring/prometheus/Dockerfile``` с содержимым:
+```css
+FROM prom/prometheus:v2.1.0
+ADD prometheus.yml /etc/prometheus/
+```
+
+6. Создаем конфигурацию для сбора метрик, файл ```monitoring/prometheus/prometheus.yml``` с содержимым
+```css
+---
+global:
+  scrape_interval: '5s'
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets:
+        - 'localhost:9090'
+
+  - job_name: 'ui'
+    static_configs:
+      - targets:
+        - 'ui:9292'
+
+  - job_name: 'comment'
+    static_configs:
+      - targets:
+        - 'comment:9292'
+```
+
+7. Создаем образ с Prometheus
+```css
+$ export USER_NAME=seeker00837149
+$ docker build -t $USER_NAME/prometheus .
+```
+
+Отправляем образ в docker hub
+```css
+$ docker push $USER_NAME/prometheus
+```
+
+8. Собираем образы микросервисов
+```css
+$ for i in ui post-py comment; do cd src/$i; bash docker_build.sh; cd -; done
+```
+
+9. Определяем в docker compose новый сервис
+```css
+version: '3.3'
+services:
+  post_db:
+    image: mongo:${MONGO_TAG}
+    volumes:
+      - post_db:/data/db
+    networks:
+      back_net:
+        aliases:
+          - post_db
+  comment_db:
+    image: mongo:${MONGO_TAG}
+    volumes:
+      - comment_db:/data/db
+    networks:
+      back_net:
+        aliases:
+          - comment_db
+  ui:
+    build: ./ui
+    image: ${USERNAME_HUB}/ui:${SERVICE_VER}
+    ports:
+      - 80:9292/tcp
+    networks:
+      front_net:
+        aliases:
+          - ui
+  post:
+    build: ./post-py
+    image: ${USERNAME_HUB}/post:${SERVICE_VER}
+    container_name: post
+    networks:
+      front_net:
+        aliases:
+          - post
+      back_net:
+        aliases:
+          - post
+  comment:
+    build: ./comment
+    image: ${USERNAME_HUB}/comment:${SERVICE_VER}
+    networks:
+      front_net:
+        aliases:
+          - comment
+      back_net:
+        aliases:
+          - comment
+  prometheus:
+    image: ${USERNAME_HUB}/prometheus
+    ports:
+      - '9090:9090'
+    volumes:
+      - prometheus_data:/prometheus
+    command: # Передаем доп параметры в командной строке
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention=1d' # Задаем время хранения метрик в 1 день
+    networks:
+      mon_net:
+        aliases:
+          - mon
+      front_net:
+        aliases:
+          - mon
+      back_net:
+        aliases:
+          - mon
+
+volumes:
+  post_db:
+  comment_db:
+  prometheus_data:
+
+networks:
+  front_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${FRONT_NET_SUBNET}
+  back_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${BACK_NET_SUBNET}
+  mon_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${MON_NET_SUBNET}
+```
+
+10. Поднимаем сервисы определенные в docker-compose.yml
+```css
+$ docker-compose up -d
+```
+
+11. Теперь в Prometheus добавились enpoint-ты по сервисам ui и comment, они в состянии UP
+
+12. Проверяем метрики по healtcheck, тестируем поэтапное отключение docker контейнеров с сервисами и наблюдаем результат по графикам
+
+13. Настройка экспортеров  
+Добавляем в ```docker-compose.yml``` настройки для экспортера
+```css
+node-exporter:
+  image: prom/node-exporter:v0.15.2
+  user: root
+  volumes:
+    - /proc:/host/proc:ro
+    - /sys:/host/sys:ro
+    - /:/rootfs:ro
+  command:
+    - '--path.procfs=/host/proc'
+    - '--path.sysfs=/host/sys'
+    - '--collector.filesystem.ignored-mount-points="^/(sys|proc|dev|host|etc)($$|/)"'
+```
+
+В ```monitoring/prometheus/prometheus.yml``` добавляем новый job
+```css
+- job_name: 'node'
+  static_configs:
+    - targets:
+      - 'node-exporter:9100'
+```
+
+14. Собираем новый образ Prometheus и отправляем его в Docker Hub
+```css
+$ docker build -t $USER_NAME/prometheus .
+$ docker push $USER_NAME/prometheus
+```
+
+15. Пересоздаем сервисы
+```css
+$ docker-compose down
+$ docker-compose up -d
+``` 
+
+16. Проверяем в Prometheus график CPU нагрузив docker host через ```yes > /dev/null```
+
+17. Ссылки на образы в Docker Hub
+```css
+https://hub.docker.com/repository/docker/seeker00837149/prometheus
+https://hub.docker.com/repository/docker/seeker00837149/post
+https://hub.docker.com/repository/docker/seeker00837149/comment
+https://hub.docker.com/repository/docker/seeker00837149/ui
+https://hub.docker.com/repository/docker/seeker00837149/otus-reddit
+```
+
+## Задания со ⭐
+Добавить в Prometheus мониторинг MongoDB с использованием необходимого экспортера.  
+> За основу взял [экспортер от Percona](https://github.com/percona/mongodb_exporter)
+
+Добавляем в ```docker-compose.yml``` инструкции по экспортеру указав нужные сети
+```css
+  mongodb-exporter:
+    image: percona/mongodb_exporter:0.20
+    command:
+      - '--mongodb.uri=mongodb://post_db:27017'
+    networks:
+      back_net:
+        aliases:
+          - mongo_exporter
+      mon_net:
+        aliases:
+          - mongo_exporter
+```
+
+В ```monitoring/prometheus/prometheus.yml``` добавляем новый job
+```css
+  - job_name: 'mongodb'
+    static_configs:
+      - targets:
+        - 'mongodb-exporter:9216'
+```
+
+Пересобираем образ Prometheus и отправляем его в Docker Hub
+```css
+$ docker build -t $USER_NAME/prometheus .
+$ docker push $USER_NAME/prometheus
+```
+
+Запускаем docker-compose
+```css
+$ docker-compose up -d
+```
+
+Новые метрики по мониторингу mongodb можно найти в интерфейсе Prometheus Graph, введя в поиске ключевое слово ```mongo``` 
+
+## Задания со ⭐
+Добавьте в Prometheus мониторинг сервисов comment, post, ui с помощью blackbox экспортера  
+> За основу взят [экспортер от Percona](https://github.com/prometheus/blackbox_exporter)
+
+Создаем каталог ```monitoring/blackbox_exporter```
+```css
+$ mkdir monitoring/blackbox_exporter
+```
+
+В каталоге ```blackbox_exporter``` создаем файл ```blackbox.yml``` с следующим содержимым
+```css
+modules:
+  http_2xx:
+    prober: http
+  http_post_2xx:
+    prober: http
+    http:
+      method: POST
+  tcp_connect:
+    prober: tcp
+  pop3s_banner:
+    prober: tcp
+    tcp:
+      query_response:
+      - expect: "^+OK"
+      tls: true
+      tls_config:
+        insecure_skip_verify: false
+  grpc:
+    prober: grpc
+    grpc:
+      tls: true
+      preferred_ip_protocol: "ip4"
+  grpc_plain:
+    prober: grpc
+    grpc:
+      tls: false
+      service: "service1"
+  ssh_banner:
+    prober: tcp
+    tcp:
+      query_response:
+      - expect: "^SSH-2.0-"
+      - send: "SSH-2.0-blackbox-ssh-check"
+  irc_banner:
+    prober: tcp
+    tcp:
+      query_response:
+      - send: "NICK prober"
+      - send: "USER prober prober prober :prober"
+      - expect: "PING :([^ ]+)"
+        send: "PONG ${1}"
+      - expect: "^:[^ ]+ 001"
+  icmp:
+    prober: icmp
+```
+
+Рядом создаем файл ```Dockerfile``` с содержимым
+```css
+FROM prom/blackbox-exporter:master
+COPY blackbox.yml /etc/blackbox_exporter/config.yml
+```
+
+Собираем образ экспортера и отправляем его в Docker Hub
+```css
+$ docker build -t $USER_NAME/blackbox_exporter .
+$ docker push $USER_NAME/blackbox_exporter
+```
+
+Добавляем в файл ```monitoring/prometheus/prometheus.yml``` новый job с экспортером
+```css
+  - job_name: 'blackbox'
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    static_configs:
+      - targets:
+        - ui:9292
+        - comment:9292
+        - post:27017
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+```
+
+Пересобираем образ Prometheus и отправляем его в Docker Hub
+```css
+$ docker build -t $USER_NAME/prometheus .
+$ docker push $USER_NAME/prometheus
+```
+
+Добавялем в ```docker-compose.yml``` информацию о новом эскпортере, в раздел сети добавляем новую сеть blackbox_net
+```css
+...
+  blackbox-exporter:
+    image: ${USERNAME_HUB}/blackbox_exporter
+    ports:
+      - "9115:9115"
+    volumes:
+      - blackbox_config:/etc/blackbox_exporter/
+    command:
+      - '--config.file=/etc/blackbox_exporter/blackbox.yml'
+    networks:
+      blackbox_net:
+        aliases:
+          - blackbox_exporter
+      front_net:
+        aliases:
+          - blackbox_exporter
+      back_net:
+        aliases:
+          - blackbox_exporter
+      mon_net:
+        aliases:
+          - blackbox_exporter
+
+...
+```
+
+Запускаем docker-compose
+```css
+$ docker-compose up -d
+```
+
+Новые метрики по мониторингу comment, post и ui можно найти в интерфейсе Prometheus Graph, введя в поиске ключевое слово ```probe``` 
