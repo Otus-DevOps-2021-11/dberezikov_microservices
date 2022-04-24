@@ -1,0 +1,146 @@
+version: '3.3'
+services:
+  post_db:
+    image: mongo:${MONGO_TAG}
+    volumes:
+      - post_db:/data/db
+    networks:
+      back_net:
+        aliases:
+          - post_db
+  comment_db:
+    image: mongo:${MONGO_TAG}
+    volumes:
+      - comment_db:/data/db
+    networks:
+      back_net:
+        aliases:
+          - comment_db
+  ui:
+#    build: ./ui
+    image: ${USERNAME_HUB}/ui:${SERVICE_VER}
+    ports:
+      - 80:9292/tcp
+    networks:
+      front_net:
+        aliases:
+          - ui
+  post:
+#    build: ./post-py
+    image: ${USERNAME_HUB}/post:${SERVICE_VER}
+    container_name: post 
+    networks:
+      front_net:
+        aliases:
+          - post
+      back_net:
+        aliases:
+          - post
+  comment:
+#    build: ./comment
+    image: ${USERNAME_HUB}/comment:${SERVICE_VER}
+    networks:
+      front_net:
+        aliases:
+          - comment        
+      back_net:
+        aliases:
+          - comment
+  prometheus:
+    image: ${USERNAME_HUB}/prometheus
+    ports:
+      - '9090:9090'
+    volumes:
+      - prometheus_data:/prometheus
+    command: # Передаем доп параметры в командной строке
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention=1d' # Задаем время хранения метрик в 1 день
+    networks:
+      mon_net:
+        aliases:
+          - mon        
+      front_net:
+        aliases:
+          - mon
+      back_net:
+        aliases:
+          - mon
+
+  node-exporter:
+    image: prom/node-exporter:v0.15.2
+    user: root
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.ignored-mount-points="^/(sys|proc|dev|host|etc)($$|/)"'
+    networks:
+      mon_net:
+        aliases:      
+          - exporter
+
+  mongodb-exporter:
+    image: percona/mongodb_exporter:0.20
+    command:
+      - '--mongodb.uri=mongodb://post_db:27017'
+    networks:
+      back_net:
+        aliases:
+          - mongo_exporter
+      mon_net:
+        aliases:
+          - mongo_exporter
+
+  blackbox-exporter:
+    image: ${USERNAME_HUB}/blackbox_exporter
+    ports:
+      - "9115:9115"        
+    volumes:
+      - blackbox_config:/etc/blackbox_exporter/
+    command:
+      - '--config.file=/etc/blackbox_exporter/blackbox.yml'
+    networks:
+      blackbox_net:
+        aliases:
+          - blackbox_exporter
+      front_net:
+        aliases:
+          - blackbox_exporter
+      back_net:
+        aliases:
+          - blackbox_exporter
+      mon_net:
+        aliases:
+          - blackbox_exporter
+
+volumes:
+  post_db:
+  comment_db:        
+  prometheus_data:
+  blackbox_config:
+
+networks:
+  front_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${FRONT_NET_SUBNET}
+  back_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${BACK_NET_SUBNET}
+  mon_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${MON_NET_SUBNET}
+  blackbox_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${BLACKBOX_NET_SUBNET}

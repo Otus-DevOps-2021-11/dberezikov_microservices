@@ -1538,7 +1538,11 @@ https://hub.docker.com/repository/docker/seeker00837149/otus-reddit
 
 ## Задания со ⭐
 Добавить в Prometheus мониторинг MongoDB с использованием необходимого экспортера.  
-> За основу взял [экспортер от Percona](https://github.com/percona/mongodb_exporter)
+
+
+2. Обновляем код в директории /src кодом по ссылке из методички
+
+3. > За основу взял [экспортер от Percona](https://github.com/percona/mongodb_exporter)
 
 Добавляем в ```docker-compose.yml``` инструкции по экспортеру указав нужные сети
 ```css
@@ -1704,4 +1708,245 @@ $ docker push $USER_NAME/prometheus
 $ docker-compose up -d
 ```
 
-Новые метрики по мониторингу comment, post и ui можно найти в интерфейсе Prometheus Graph, введя в поиске ключевое слово ```probe``` 
+Новые метрики по мониторингу comment, post и ui можно найти в интерфейсе Prometheus Graph, введя в поиске ключевое слово ```probe``` :w
+
+# ДЗ №16 Логирование и распределенная трассировка  
+
+1. Создаем новую ветку ```logging-1```
+```css
+$ git checkout -b logging-1
+```
+
+2. Обновляем код в директории /src кодом по ссылке из методички
+
+3. Собираем обновленный код приложений в Docker образы и отправляем их в Docker Hub
+```css
+$ export USER_NAME=seeker00837149
+$ cd ./src/ui && bash docker_build.sh && docker push $USER_NAME/ui:logging
+$ cd ../post-py && bash docker_build.sh && docker push $USER_NAME/post:logging
+$ cd ../comment && bash docker_build.sh && docker push $USER_NAME/comment:logging
+```
+
+4. Создаем Docker-хост с именем logging и настраиваем локальное окружение на работу с ним
+
+5. Собираем инфраструктуру мониторинга ElasticSearch, Kibana, Fluentd и Zipkin    
+   Создаем ```docker-compose-logging.yml``` с следующим содержимым:
+```css
+version: '3'
+services:
+
+  zipkin:
+    image: openzipkin/zipkin:2.21.0
+    ports:
+      - "9411:9411"
+    networks:
+      - front_net
+      - back_net
+
+  fluentd:
+    image: seeker00837149/fluentd
+    ports:
+      - "24224:24224"
+      - "24224:24224/udp"
+
+  elasticsearch:
+    image: mrgreyves/elasticsearch:7.13.1
+    environment:
+      - ELASTIC_CLUSTER=false
+      - CLUSTER_NODE_MASTER=true
+      - CLUSTER_MASTER_NODE_NAME=es01
+      - discovery.type=single-node
+    expose:
+      - 9200
+    ports:
+      - "9200:9200"
+
+  kibana:
+    image: mrgreyves/kibana:7.13.1
+    ports:
+      - "5601:5601"
+
+networks:
+  back_net:
+  front_net:
+```
+
+6. Собираем инфраструктуру приложения  
+   Содержимое файла ```docker-compose.yml```
+```css
+version: '3.3'
+services:
+
+  post_db:
+    image: mongo:${MONGO_TAG}
+    volumes:
+      - post_db:/data/db
+    environment:
+      - ZIPKIN_ENABLED=${ZIPKIN_ENABLED}
+    networks:
+      back_net:
+        aliases:
+          - post_db
+
+  comment_db:
+    image: mongo:${MONGO_TAG}
+    volumes:
+      - comment_db:/data/db
+    environment:
+      - ZIPKIN_ENABLED=${ZIPKIN_ENABLED}
+    networks:
+      back_net:
+        aliases:
+          - comment_db
+
+  ui:
+#    build: ./ui
+    image: ${USERNAME_HUB}/ui:${SERVICE_VER}
+    ports:
+      - 80:9292/tcp
+    logging:
+      driver: "fluentd"
+      options:
+        fluentd-address: localhost:24224
+        tag: service.ui
+    environment:
+      - ZIPKIN_ENABLED=${ZIPKIN_ENABLED}
+    networks:
+      front_net:
+        aliases:
+          - ui
+
+  post:
+#    build: ./post-py
+    image: ${USERNAME_HUB}/post:${SERVICE_VER}
+    container_name: post
+    logging:
+      driver: "fluentd"
+      options:
+        fluentd-address: localhost:24224
+        tag: service.post
+    environment:
+      - ZIPKIN_ENABLED=${ZIPKIN_ENABLED}
+    networks:
+      front_net:
+        aliases:
+          - post
+      back_net:
+        aliases:
+          - post
+
+  comment:
+#    build: ./comment
+    image: ${USERNAME_HUB}/comment:${SERVICE_VER}
+    environment:
+      - ZIPKIN_ENABLED=${ZIPKIN_ENABLED}
+    networks:
+      front_net:
+        aliases:
+          - comment
+      back_net:
+        aliases:
+          - comment
+
+volumes:
+  post_db:
+  comment_db:
+
+networks:
+  front_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${FRONT_NET_SUBNET}
+  back_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${BACK_NET_SUBNET}
+```
+
+## Задания со ⭐
+7. Создаем конфиг fluentd с grok-шаблонами для неструктурированных логов с разбором логов UI-сервиса  
+   Содержимое файла ```/docker/fluentd/fluent.conf```
+
+```css
+<source>
+  @type forward
+  port 24224
+  bind 0.0.0.0
+</source>
+
+<filter service.post>
+ @type parser
+ format json
+ key_name log
+</filter>
+
+<filter service.ui>
+  @type parser
+  key_name log
+  <parse>
+    @type grok
+    <grok>
+      pattern %{RUBY_LOGGER}
+    </grok>
+  </parse>
+</filter>
+
+<filter service.ui>
+  @type parser
+  reserve_data true
+  key_name message
+  <parse>
+    @type grok
+    <grok>
+      pattern service=%{WORD:service} \| event=%{WORD:event} \| request_id=%{GREEDYDATA:request_id} \| message=%{GREEDYDATA:message}
+    </grok>
+    <grok>
+      pattern service=%{WORD:service} \| event=%{WORD:event} \| path=%{URIPATH:path} \| request_id=%{GREEDYDATA:request_id} \| remote_addr=%{IPV4:remote_addr} \| method=\s*%{WORD:method} \| response_status=%{INT:response_status}
+    </grok>
+  </parse>
+</filter>
+
+<match *.**>
+  @type copy
+
+  <store>
+    @type elasticsearch
+    host elasticsearch
+    port 9200
+    logstash_format true
+    logstash_prefix fluentd
+    logstash_dateformat %Y%m%d
+    include_tag_key true
+    type_name access_log
+    tag_key @log_name
+    flush_interval 1s
+  </store>
+
+  <store>
+    @type stdout
+  </store>
+</match>
+```
+
+8. Собираем образ fluentd с конфигом
+```css
+$ cd ../logging/fluentd && docker build -t $USER_NAME/fluentd .
+```
+
+9 . Поднимаем инфраструктуру приложения и мониторинга
+```css
+$ cd ../../docker && docker-compose -f docker-compose-logging.yml -f docker-compose.yml up -d
+```
+
+10. В интерфейсе Kibana создаем индекс ```fluentd-*``` и указываем поле @timestamp для Time filter.  
+- Создаем несколько постов и активностей в приложении, что бы видеть эффект в Kibana,  
+- Введя в поисковой строке KQL запрос ```event: post_create``` получаем в выдаче логи момента создания постов в прилождении,  
+- Введя в поисковой строке KQL запрос ```@log_name: service.ui``` наблюдаем распарсенные по полям логи        
+
+11. В конфигурациях указанных выше мы уже подключили Zipkin, теперь можно через его интерфейс проверить трейсы запросов и время отработки запросов
+
+## Задания со ⭐
+12. Траблшутинг UI-экспириенса  
+К сожалению это задание выполнить не удалось. Скачал git репозиторий по ссылке, сбилдил образы приложений и отправил их в Docker Hub с тегом ```bugged```. В ```.env``` файле изменил переменную ```SERVICE_VER``` с ```logging``` на ```bugged```. Поднял приложение из образов с тегом ```bugged```, но в web интерфейсе UI обнаружил ошибку: "Can't show blog posts, some problems with the post service.". Судя по логам UI сервиса он (сервис) не мог подсоединится к post сервису по адресу 127.0.0.1:4567. Переписал Dockerfile для post сервиса добавив в него обновление pip, пересобрал образ, но это не помогло. В данный момет разбираться нет времени, поэтому оставляю второе задание со звездочкой невыполненным.
