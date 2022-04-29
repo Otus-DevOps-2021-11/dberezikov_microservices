@@ -7,3 +7,4 @@ packer/variables.json
 terraform/files/appuser.pub
 *.retry
 src/.env
+docker/.env
