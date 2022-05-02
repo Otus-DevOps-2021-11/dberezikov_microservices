@@ -1950,3 +1950,429 @@ $ cd ../../docker && docker-compose -f docker-compose-logging.yml -f docker-comp
 ## Задания со ⭐
 12. Траблшутинг UI-экспириенса  
 К сожалению это задание выполнить не удалось. Скачал git репозиторий по ссылке, сбилдил образы приложений и отправил их в Docker Hub с тегом ```bugged```. В ```.env``` файле изменил переменную ```SERVICE_VER``` с ```logging``` на ```bugged```. Поднял приложение из образов с тегом ```bugged```, но в web интерфейсе UI обнаружил ошибку: "Can't show blog posts, some problems with the post service.". Судя по логам UI сервиса он (сервис) не мог подсоединится к post сервису по адресу 127.0.0.1:4567. Переписал Dockerfile для post сервиса добавив в него обновление pip, пересобрал образ, но это не помогло. В данный момет разбираться нет времени, поэтому оставляю второе задание со звездочкой невыполненным.
+
+# ДЗ №17 Введение в kubernetes  
+
+1. Создаем новую верку в репозитории
+```css
+$ git checkout -b  kubernetes-1
+```
+2. Создаем необходимые директории
+```css
+$ mkdir -p kubernetes/reddit
+```
+3. Создаем файл ```post-deployment.yml``` с следующим содержимым:
+```css
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: post-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: post
+  template:
+    metadata:
+      name: post
+      labels:
+        app: post
+    spec:
+      containers:
+      - image: chromko/post
+        name: post
+``` 
+4. Создадим файлы ```ui-deployment.yml```, ```comment-deployment.yml```, ```mongo-deployment.yml``` по примеру ```post-deployment.yml```
+
+## Задания со ⭐
+
+## Создадим инфраструктуру для k8s кластера через terraform и ansible
+
+5. Создаем каталог ```terraform```
+```css
+$ mkdir terraform
+```
+
+6. Создаем файл ```variables.tf``` с описанием переменных, которые будем использовать
+```css
+variable token {
+  description = "OAuth"
+}
+variable cloud_id {
+  description = "Cloud"
+}
+variable folder_id {
+  description = "Folder"
+}
+variable zone {
+  description = "Zone"
+  default = "ru-central1-a"
+}
+variable region {
+  description = "Region"
+  default = "ru-central1"
+}
+variable public_key_path {
+  description = "Path to the public key used for ssh access"
+}
+variable private_key_path {
+  description = "Path to the private key used for ssh access"
+}
+variable subnet_id {
+  description = "Subnet"
+}
+variable service_account_key_file {
+  description = "key .json"
+}
+variable count_of_instances {
+  description = "Count of instances"
+  default     = 1
+}
+```
+
+7. Создаем файл ```terraform.tfvars``` с значением переменных
+```css
+token                    = "***"
+cloud_id                 = "***"
+folder_id                = "***"
+zone                     = "ru-central1-a"
+region                   = "ru-central1"
+public_key_path          = "~/.ssh/appuser.pub"
+private_key_path         = "~/.ssh/appuser"
+subnet_id                = "***"
+service_account_key_file = "~/key/terraform_key.json"
+count_of_instances       = "2"
+```
+
+8. Создаем файл ```outputs.tf``` что бы получить ip адреса хостов по завершению развертывания
+```css
+output "external_ip_address_k8s" {
+  value = yandex_compute_instance.k8s[*].network_interface.0.nat_ip_address
+}
+```
+
+9. Создаем файл манифеста ```main.tf``` с описание подклчения к провайдеру и описанием создаваемых хостов
+```css
+terraform {
+  required_providers {
+    yandex = {
+      source = "terraform-registry.storage.yandexcloud.net/yandex-cloud/yandex"
+    }
+  }
+  required_version = ">= 0.13"
+}
+
+provider "yandex" {
+  token                    = var.token
+  cloud_id                 = var.cloud_id
+  folder_id                = var.folder_id
+  zone                     = var.zone
+}
+
+data "yandex_compute_image" "ubuntu-image" {
+  family = "ubuntu-1804-lts"
+}
+
+resource "yandex_compute_instance" "k8s" {
+  name = "node${1+count.index}"
+  count = var.count_of_instances
+
+  resources {
+    core_fraction = 20
+    cores  = 4
+    memory = 4
+  }
+
+  boot_disk {
+    initialize_params {
+      image_id = data.yandex_compute_image.ubuntu-image.image_id
+      size     = 40
+      type     = "network-ssd"
+    }
+  }
+
+  network_interface {
+    subnet_id = var.subnet_id
+    nat       = true
+  }
+
+  metadata = {
+    ssh-keys = "ubuntu:${file(var.public_key_path)}"
+  }
+
+  connection {
+    type  = "ssh"
+    host  = self.network_interface.0.nat_ip_address
+    user  = "ubuntu"
+    agent = false
+    private_key = file(var.private_key_path)
+  }
+
+}
+```
+
+10. Проводим инициализацию конфигурации terraform и деплоим хосты в Yandex Cloud
+```css
+$ terraform init
+$ terraform apply --auto-approve
+```
+
+11. Создаем каталог ```ansible``` рядом с каталогом ```terraform```
+```css
+$ mkdir ansible
+```
+
+12. Создаем конфиг ```ansible.cfg```
+```css
+[defaults]
+inventory = ./dynamic-inventory.sh
+remote_user = ubuntu
+private_key_file = ~/.ssh/appuser
+host_key_checking = False
+retry_files_enabled = False
+```
+
+13. Создаем файл ```dynamic-inventory.sh``` динамического инвентори
+```css
+#!/bin/bash
+
+if [ "$1" == "--list" ] ; then
+  if [ -e $inventory_temp ]; then
+          echo "[all]" > inventory_temp
+  else
+          touch inventory_temp
+          echo "[all]" > inventory_temp
+  fi
+  yc compute instance list | grep RUNNING | awk '{print$10}' | grep -v '^|' | sed -E '/^$/d' >> inventory_temp
+  if [ -e $inventory.json ]; then
+          ansible-inventory --list -i inventory_temp > inventory.json
+  else
+          touch inventory.json
+          ansible-inventory --list -i inventory_temp > inventory.json
+  fi
+  ansible-inventory --list -i inventory_temp
+  rm inventory_temp
+elif [ "$1" == "--host" ]; then
+          echo '{"_meta": {"hostvars": {}}}'
+  else
+          echo "{ }"
+fi
+```
+
+14. Создаем playbook ```docker_v19.03_install.yml``` для установки docker нужной версии (версию пришлось находить опытным путем)
+```css
+---
+- name: Docker Install
+  hosts: all
+  become: true
+  tasks:
+    - name: Install dependencies
+      apt:
+        update_cache: yes
+        name:
+        - apt-transport-https
+        - ca-certificates
+        - curl
+        - software-properties-common
+        - python3-pip
+        - gnupg
+        state: present
+
+    - name: Add Docker apt key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker repo
+      apt_repository:
+        repo: deb https://download.docker.com/linux/ubuntu bionic stable
+        state: present
+
+    - name: Install Docker Engine
+      apt:
+        update_cache: yes
+        name:
+        - docker-ce=5:19.03.15~3-0~ubuntu-bionic
+        - docker-ce-cli=5:19.03.15~3-0~ubuntu-bionic
+        - containerd.io
+
+    - name: Install Docker module for Python
+      pip:
+        name: docker
+```
+
+15. Создаем playbook ```kube_install.yml``` для установки Kubernetes
+```css
+---
+- name: Kubelet Kubeadm Kubectl Install
+  hosts: all
+  become: true
+  tasks:
+    - name: Install dependencies
+      apt:
+        update_cache: yes
+        name:
+        - apt-transport-https
+        - ca-certificates
+        - curl
+        - software-properties-common
+        - python3-pip
+        - gnupg
+        state: present
+
+    - name: Add Kubernetes apt key
+      apt_key:
+        url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+        state: present
+
+    - name: Add Kuber repo
+      apt_repository:
+        repo: deb https://apt.kubernetes.io/ kubernetes-xenial main
+        state: present
+
+    - name: Install Kube utils
+      apt:
+        update_cache: yes
+        name:
+        - kubelet=1.19.14-00
+        - kubeadm=1.19.14-00
+        - kubectl=1.19.14-00
+
+    - name: Disable swap memory
+      ansible.builtin.shell:
+        cmd: swapoff -a
+```
+
+16. Проверка работы динамического инвентори
+```css
+$ ansible all -m ping
+```
+
+Вывод резуьтата команды
+```css
+51.250.77.222 | SUCCESS => {
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python3"
+    },
+    "changed": false,
+    "ping": "pong"
+}
+51.250.77.185 | SUCCESS => {
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python3"
+    },
+    "changed": false,
+    "ping": "pong"
+}
+```
+
+17. Запускаем установку на хосты Docker и Kubernates
+```css
+$ ansible-playbook playbooks/docker_v18.09_install.yml
+$ ansible-playbook playbooks/kube_install.yml
+```
+
+18. Заходим на master ноду и инициируем создание Kubernetes кластера
+```css
+$ ssh -i ~/.ssh/appuser ubuntu@51.250.77.222
+$ sudo kubeadm init --pod-network-cidr=10.244.0.0/16
+$ mkdir -p $HOME/.kube
+$ sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+$ sudo chown $(id -u):$(id -g) $HOME/.kube/config
+```
+
+После выполнинея команды ```kubeadm init``` получили строку для подключения воркеров к мастеру
+
+19. Переходим на worker ноду и подключаем ее к master
+```css
+$ ssh -i ~/.ssh/appuser ubuntu@51.250.77.185
+$ kubeadm join 10.128.0.16:6443 --token 78ovmg.3du9ygy60tgzvx2o \
+    --discovery-token-ca-cert-hash sha256:4701d21f304c04f88ac59fa6cbba5708af2b8e79e46a05c6014b59654d7bf506
+```
+
+20. Возвращаемся на master ноду и проверяем статус нод
+```css
+$ ssh -i ~/.ssh/appuser ubuntu@51.250.77.222
+$ kubectl get nodes
+```
+
+Ноды в статусе NotReady  
+
+Воспользуемся командой  ```kubectl describe node fhm98pjglkrktvrjpj8h``` и видим, что проблема в неустановленном сетевом плагине  
+```runtime network not ready: NetworkReady=false reason:NetworkPluginNotReady message:docker: network plugin is not ready: cni config uninitialized```
+
+21. Скачаем и установим сетевой плагин calico
+```css
+$ curl https://docs.projectcalico.org/manifests/calico.yaml -O
+```
+
+Раскоментируем и изменим в файле calico.yaml значение переменной ```CALICO_IPV4POOL_CIDR``` на ```10.244.0.0/16```
+
+Установим плагин
+```css
+$ kubectl apply -f calico.yaml
+```
+
+22. Проверим результат установки сетевого плагина
+```css
+$ kubectl get nodes
+```
+
+Примерно через 15-20 секунд ноды перейдут в состояние Ready
+```css
+NAME                   STATUS   ROLES    AGE    VERSION
+fhm98pjglkrktvrjpj8h   Ready    master   6h6m   v1.19.14
+fhmktm3jdra6gcre5oiu   Ready    <none>   6h4m   v1.19.14
+```
+
+23. Проверяем установку подов
+```css
+$ kubectl get pods --all-namespaces
+```
+
+```css
+NAMESPACE     NAME                                           READY   STATUS    RESTARTS   AGE
+kube-system   calico-kube-controllers-6fcb5c5bcf-s68jl       1/1     Running   0          6h4m
+kube-system   calico-node-dk9ll                              1/1     Running   0          6h4m
+kube-system   calico-node-t97sx                              1/1     Running   0          6h4m
+kube-system   coredns-f9fd979d6-ls65g                        1/1     Running   0          6h8m
+kube-system   coredns-f9fd979d6-wkhmp                        1/1     Running   0          6h8m
+kube-system   etcd-fhm98pjglkrktvrjpj8h                      1/1     Running   0          6h8m
+kube-system   kube-apiserver-fhm98pjglkrktvrjpj8h            1/1     Running   0          6h8m
+kube-system   kube-controller-manager-fhm98pjglkrktvrjpj8h   1/1     Running   0          6h8m
+kube-system   kube-proxy-4t64w                               1/1     Running   0          6h8m
+kube-system   kube-proxy-jcpnp                               1/1     Running   0          6h6m
+kube-system   kube-scheduler-fhm98pjglkrktvrjpj8h            1/1     Running   0          6h8m
+```
+
+24. Скачаем и установим манифесты созданные ранее
+```css
+$ curl https://raw.githubusercontent.com/Otus-DevOps-2021-11/dberezikov_microservices/kubernetes-1/kubernetes/reddit/ui-deployment.yml -O
+$ curl https://raw.githubusercontent.com/Otus-DevOps-2021-11/dberezikov_microservices/kubernetes-1/kubernetes/reddit/post-deployment.yml -O
+$ curl https://raw.githubusercontent.com/Otus-DevOps-2021-11/dberezikov_microservices/kubernetes-1/kubernetes/reddit/comment-deployment.yml -O
+$ curl https://raw.githubusercontent.com/Otus-DevOps-2021-11/dberezikov_microservices/kubernetes-1/kubernetes/reddit/mongo-deployment.yml -O
+
+$ kubectl apply -f ui-deployment.yml
+$ kubectl apply -f post-deployment.yml
+$ kubectl apply -f mongo-deployment.yml
+$ kubectl apply -f comment-deployment.yml
+```
+
+25. Проверка подов через ```kubectl get pods```
+```css
+NAME                                  READY   STATUS    RESTARTS   AGE
+comment-deployment-6fd5474494-n4mt2   1/1     Running   0          6h10m
+mongo-deployment-796dd87796-s6g5q     1/1     Running   0          6h10m
+post-deployment-799c77ffb-jwghf       1/1     Running   0          6h10m
+ui-deployment-7998b8c4c6-mz6nr        1/1     Running   0          6h11m
+```
+
+26. Удаляем ноды 
+```css
+$ terraform destroy
+```
+
+
+К сожалению нет времени делать поднятие k8s кластера полностью автоматичеким средствами ansible и terraform...
+
