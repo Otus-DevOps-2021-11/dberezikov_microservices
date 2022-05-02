@@ -1,0 +1,38 @@
+---
+- name: Kubelet Kubeadm Kubectl Install
+  hosts: all
+  become: true
+  tasks:
+    - name: Install dependencies
+      apt:
+        update_cache: yes
+        name:
+        - apt-transport-https
+        - ca-certificates
+        - curl
+        - software-properties-common
+        - python3-pip
+        - gnupg
+        state: present
+
+    - name: Add Kubernetes apt key
+      apt_key:
+        url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+        state: present
+
+    - name: Add Kuber repo
+      apt_repository:
+        repo: deb https://apt.kubernetes.io/ kubernetes-xenial main
+        state: present
+
+    - name: Install Kube utils 
+      apt:
+        update_cache: yes
+        name:
+        - kubelet=1.19.14-00
+        - kubeadm=1.19.14-00
+        - kubectl=1.19.14-00
+
+    - name: Disable swap memory
+      ansible.builtin.shell:
+        cmd: swapoff -a
